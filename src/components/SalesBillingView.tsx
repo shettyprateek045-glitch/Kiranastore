@@ -1,12 +1,18 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Check,
+  Copy,
+  ExternalLink,
   Mic,
   MicOff,
   Minus,
+  Pencil,
   Plus,
   Printer,
+  QrCode,
   Receipt,
   Search,
+  Smartphone,
   Trash2,
   Volume2,
   VolumeX,
@@ -15,6 +21,15 @@ import {
 import { useShop } from '../context/ShopContext.tsx';
 import type { SaleRecord } from '../types/dukaaniq.ts';
 import { daysBetweenDates, formatISODate } from '../services/intelligenceEngine.ts';
+import {
+  buildUpiPaymentUri,
+  generateBillPaymentRef,
+  generateUpiQrDataUrl,
+  isValidUpiVpa,
+  loadShopUpiConfig,
+  saveShopUpiConfig,
+  type ShopUpiConfig,
+} from '../services/upiQrService.ts';
 import {
   createSpeechRecognition,
   isSpeechRecognitionSupported,
@@ -51,7 +66,25 @@ export function SalesBillingView() {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const [printableBill, setPrintableBill] = useState<SaleRecord | null>(null);
+  const [printableUpiRef, setPrintableUpiRef] = useState<string | null>(null);
   const [periodFilter, setPeriodFilter] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
+
+  // Merchant UPI & QR Code payment modal state
+  const [upiConfig, setUpiConfig] = useState<ShopUpiConfig>({
+    vpa: 'gramsetushop@upi',
+    payeeName: 'Kirana Store',
+    isConfigured: false,
+  });
+  const [editingUpi, setEditingUpi] = useState(false);
+  const [vpaDraft, setVpaDraft] = useState('');
+  const [payeeDraft, setPayeeDraft] = useState('');
+  const [vpaErr, setVpaErr] = useState('');
+  const [upiModalOpen, setUpiModalOpen] = useState(false);
+  const [upiRef, setUpiRef] = useState('');
+  const [upiUri, setUpiUri] = useState('');
+  const [upiQrDataUrl, setUpiQrDataUrl] = useState('');
+  const [upiQrLoading, setUpiQrLoading] = useState(false);
+  const [copiedUpi, setCopiedUpi] = useState(false);
 
   // Web Speech API voice billing state
   const speechSupported = useMemo(() => isSpeechRecognitionSupported(), []);
@@ -64,6 +97,15 @@ export function SalesBillingView() {
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
 
   const todayISO = formatISODate(new Date());
+
+  // Load saved shop UPI ID whenever active shop changes
+  useEffect(() => {
+    if (!workspace) return;
+    const loaded = loadShopUpiConfig(workspace.shop.id, workspace.shop.name);
+    setUpiConfig(loaded);
+    setVpaDraft(loaded.vpa);
+    setPayeeDraft(loaded.payeeName);
+  }, [workspace?.shop.id, workspace?.shop.name]);
 
   const productMap = useMemo(
     () => new Map((workspace?.products || []).map((p) => [p.id, p])),
@@ -114,6 +156,37 @@ export function SalesBillingView() {
       grossProfit,
     };
   }, [cart, productMap, discount]);
+
+  // Regenerate scannable NPCI UPI QR whenever modal is open or VPA/total changes
+  useEffect(() => {
+    if (!upiModalOpen || !workspace || cartTotals.total <= 0) return;
+    const activeRef = upiRef || generateBillPaymentRef(workspace.shop.id);
+    if (!upiRef) setUpiRef(activeRef);
+    const totalQty = cart.reduce((s, l) => s + l.quantity, 0);
+    const uri = buildUpiPaymentUri({
+      vpa: upiConfig.vpa,
+      payeeName: upiConfig.payeeName || workspace.shop.name,
+      amount: cartTotals.total,
+      transactionRef: activeRef,
+      note: `Bill ${activeRef} (${totalQty} items)`,
+    });
+    setUpiUri(uri);
+    let cancelled = false;
+    setUpiQrLoading(true);
+    generateUpiQrDataUrl(uri)
+      .then((dataUrl) => {
+        if (!cancelled) setUpiQrDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setUpiQrDataUrl('');
+      })
+      .finally(() => {
+        if (!cancelled) setUpiQrLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [upiModalOpen, upiConfig, upiRef, cartTotals.total, cart, workspace]);
 
   const salesSummaryByPeriod = useMemo(() => {
     if (!workspace) return { count: 0, revenue: 0, grossProfit: 0, filtered: [] as SaleRecord[] };
@@ -452,8 +525,10 @@ export function SalesBillingView() {
     );
   };
 
-  const handleCheckout = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const completeSale = async (
+    overrideMethod?: 'Cash' | 'UPI' | 'Card' | 'Credit',
+    confirmedUpiRef?: string | null
+  ) => {
     setErr('');
     if (cart.length === 0) {
       setErr('Add at least one item to generate a bill.');
@@ -461,15 +536,19 @@ export function SalesBillingView() {
     }
     setSubmitting(true);
     try {
+      const methodToUse = overrideMethod || paymentMethod;
       const created = await recordSale({
         customerName: customerName.trim() || 'Walk-in Customer',
         customerPhone: customerPhone.trim() || undefined,
-        paymentMethod,
+        paymentMethod: methodToUse,
         discount: cartTotals.discount,
         items: cart,
       });
       if (created) {
         setPrintableBill(created);
+        setPrintableUpiRef(confirmedUpiRef || null);
+        setUpiModalOpen(false);
+        setUpiRef('');
         setCart([]);
         setCustomerName('');
         setCustomerPhone('');
@@ -479,6 +558,49 @@ export function SalesBillingView() {
       setErr(error instanceof Error ? error.message : 'Failed to save bill.');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleCheckout = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await completeSale();
+  };
+
+  const handleOpenUpiQr = () => {
+    setErr('');
+    if (cart.length === 0 || cartTotals.total <= 0) {
+      setErr('Add at least one item with a payable total above ₹0 to generate a UPI QR code.');
+      return;
+    }
+    setPaymentMethod('UPI');
+    setUpiRef(generateBillPaymentRef(workspace.shop.id));
+    setCopiedUpi(false);
+    setUpiModalOpen(true);
+  };
+
+  const handleSaveUpiConfig = () => {
+    setVpaErr('');
+    if (!isValidUpiVpa(vpaDraft)) {
+      setVpaErr('Enter a valid UPI ID such as yourshop@okaxis, yourshop@ybl, or yourshop@paytm.');
+      return;
+    }
+    const saved = saveShopUpiConfig(
+      workspace.shop.id,
+      vpaDraft,
+      payeeDraft.trim() || workspace.shop.name
+    );
+    setUpiConfig(saved);
+    setEditingUpi(false);
+  };
+
+  const handleCopyUpiUri = async () => {
+    if (!upiUri || typeof navigator === 'undefined' || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(upiUri);
+      setCopiedUpi(true);
+      setTimeout(() => setCopiedUpi(false), 2200);
+    } catch {
+      // Ignore clipboard permission errors
     }
   };
 
@@ -876,6 +998,82 @@ export function SalesBillingView() {
                   </button>
                 ))}
               </div>
+              {paymentMethod === 'UPI' && (
+                <div className="mt-2.5 p-3 rounded-lg bg-[#F5F9F6] border border-[#DCE6DF] space-y-2">
+                  {!editingUpi ? (
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <div className="min-w-0">
+                        <p className="text-[11px] text-[#54695B]">
+                          Merchant UPI ID {!upiConfig.isConfigured ? '(Default — Edit for live payments)' : '(Saved)'}
+                        </p>
+                        <p className="font-mono font-semibold text-[#0D2818] truncate">
+                          {upiConfig.vpa}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVpaDraft(upiConfig.vpa);
+                          setPayeeDraft(upiConfig.payeeName);
+                          setVpaErr('');
+                          setEditingUpi(true);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-[#15803D] bg-white border border-[#C6D5CA] hover:bg-[#ECF6EF] rounded-md whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        <Pencil className="w-3 h-3" />
+                        Edit UPI ID
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 text-xs">
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#3F5346] mb-1">
+                          Shop Merchant UPI VPA
+                        </label>
+                        <input
+                          type="text"
+                          value={vpaDraft}
+                          onChange={(e) => setVpaDraft(e.target.value)}
+                          placeholder="e.g. srilakshmikiran@okaxis"
+                          className="w-full px-2.5 py-1.5 font-mono text-xs bg-white border border-[#C6D5CA] rounded-md"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-[#3F5346] mb-1">
+                          Payee Display Name
+                        </label>
+                        <input
+                          type="text"
+                          value={payeeDraft}
+                          onChange={(e) => setPayeeDraft(e.target.value)}
+                          placeholder={workspace.shop.name}
+                          className="w-full px-2.5 py-1.5 text-xs bg-white border border-[#C6D5CA] rounded-md"
+                        />
+                      </div>
+                      {vpaErr && <p className="text-[11px] text-[#B91C1C]">{vpaErr}</p>}
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingUpi(false);
+                            setVpaErr('');
+                          }}
+                          className="px-2.5 py-1 text-[11px] font-medium text-[#4D6154] hover:text-[#0D2818] cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveUpiConfig}
+                          className="px-3 py-1 text-[11px] font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-md cursor-pointer"
+                        >
+                          Save UPI ID
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="p-4 rounded-xl bg-[#F5F9F6] border border-[#E2EAE4] space-y-1.5 text-xs">
@@ -899,13 +1097,27 @@ export function SalesBillingView() {
               </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={submitting || cart.length === 0}
-              className="w-full py-3 text-sm font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {submitting ? 'Saving Bill & Updating Stock...' : 'Complete Sale & Generate Bill'}
-            </button>
+            <div className="space-y-2">
+              {paymentMethod === 'UPI' && (
+                <button
+                  type="button"
+                  onClick={handleOpenUpiQr}
+                  disabled={submitting || cart.length === 0 || cartTotals.total <= 0}
+                  className="w-full py-2.5 px-4 text-sm font-semibold text-white bg-[#0D2818] hover:bg-[#153C24] rounded-lg transition-colors inline-flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer disabled:opacity-50"
+                >
+                  <QrCode className="w-4 h-4 text-[#34D399]" />
+                  Show UPI Payment QR (₹{cartTotals.total.toFixed(2)})
+                </button>
+              )}
+
+              <button
+                type="submit"
+                disabled={submitting || cart.length === 0}
+                className="w-full py-3 text-sm font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {submitting ? 'Saving Bill & Updating Stock...' : 'Complete Sale & Generate Bill'}
+              </button>
+            </div>
           </form>
         </div>
       ) : (
@@ -953,7 +1165,10 @@ export function SalesBillingView() {
                       <td className="py-3 px-4 text-right">
                         <button
                           type="button"
-                          onClick={() => setPrintableBill(s)}
+                          onClick={() => {
+                            setPrintableUpiRef(null);
+                            setPrintableBill(s);
+                          }}
                           className="inline-flex items-center gap-1 text-[#15803D] hover:underline font-medium cursor-pointer"
                         >
                           <Printer className="w-3.5 h-3.5" />
@@ -1002,6 +1217,9 @@ export function SalesBillingView() {
               <div className="text-right">
                 <p className="font-mono text-[#0D2818]">{printableBill.saleDate}</p>
                 <p className="text-[#54695B]">Paid via {printableBill.paymentMethod}</p>
+                {printableUpiRef && printableBill.paymentMethod === 'UPI' && (
+                  <p className="font-mono text-[10px] text-[#15803D]">UPI Ref: {printableUpiRef}</p>
+                )}
               </div>
             </div>
 
@@ -1052,7 +1270,10 @@ export function SalesBillingView() {
             <div className="no-print mt-5 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setPrintableBill(null)}
+                onClick={() => {
+                  setPrintableBill(null);
+                  setPrintableUpiRef(null);
+                }}
                 className="px-4 py-2 text-xs font-medium text-[#3F5346] bg-[#F2F7F3] rounded-lg cursor-pointer"
               >
                 Close
@@ -1065,6 +1286,124 @@ export function SalesBillingView() {
                 <Printer className="w-3.5 h-3.5" />
                 Print Receipt
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Customer Scan & Pay UPI QR Modal */}
+      {upiModalOpen && (
+        <div className="no-print fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4">
+          <div className="bg-white border border-[#DCE6DF] rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div className="px-5 py-4 bg-[#0D2818] text-white flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Smartphone className="w-4 h-4 text-[#34D399] shrink-0" />
+                <div className="min-w-0">
+                  <h3 className="font-display text-base font-bold truncate">UPI Scan &amp; Pay</h3>
+                  <p className="text-[11px] text-emerald-200/80 truncate">
+                    {upiConfig.payeeName || workspace.shop.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUpiModalOpen(false)}
+                aria-label="Close UPI QR modal"
+                className="p-1.5 text-emerald-100/80 hover:text-white rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="text-center space-y-1">
+                <p className="text-xs font-medium text-[#54695B]">Exact Payable Bill Amount</p>
+                <p className="font-mono text-3xl font-bold text-[#0D2818] tabular-nums">
+                  ₹{cartTotals.total.toFixed(2)}
+                </p>
+                <p className="text-[11px] text-[#54695B]">
+                  {cart.length} product{cart.length === 1 ? '' : 's'} ({cart.reduce((s, l) => s + l.quantity, 0)} qty) · Ref{' '}
+                  <span className="font-mono font-semibold text-[#0D2818]">{upiRef}</span>
+                </p>
+              </div>
+
+              {/* Scannable QR Display */}
+              <div className="mx-auto w-fit p-3.5 bg-white border-2 border-[#0D2818] rounded-2xl shadow-xs">
+                {upiQrLoading ? (
+                  <div className="w-[240px] h-[240px] flex items-center justify-center text-xs text-[#54695B]">
+                    Generating UPI QR...
+                  </div>
+                ) : upiQrDataUrl ? (
+                  <img
+                    src={upiQrDataUrl}
+                    alt={`UPI QR code for ₹${cartTotals.total.toFixed(2)} to ${upiConfig.vpa}`}
+                    className="w-[240px] h-[240px] block"
+                  />
+                ) : (
+                  <div className="w-[240px] h-[240px] flex items-center justify-center text-xs text-[#B91C1C] text-center px-4">
+                    Could not render QR code. Verify the merchant UPI ID.
+                  </div>
+                )}
+              </div>
+
+              <div className="text-center space-y-1">
+                <p className="text-xs font-semibold text-[#0D2818]">
+                  Scan with Google Pay · PhonePe · Paytm · BHIM · Any UPI App
+                </p>
+                <p className="font-mono text-xs text-[#15803D]">{upiConfig.vpa}</p>
+                {!upiConfig.isConfigured && (
+                  <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 mt-1.5">
+                    Demo default VPA active. Click &ldquo;Edit UPI ID&rdquo; on the billing panel to save your shop&rsquo;s real UPI ID.
+                  </p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleCopyUpiUri()}
+                  className="inline-flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-[#0D2818] bg-[#F2F7F3] hover:bg-[#E4EFE7] border border-[#C6D5CA] rounded-lg whitespace-nowrap cursor-pointer"
+                >
+                  {copiedUpi ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-[#15803D]" />
+                      Copied UPI Link
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      Copy UPI Link
+                    </>
+                  )}
+                </button>
+                <a
+                  href={upiUri || '#'}
+                  className="inline-flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-[#0D2818] bg-[#F2F7F3] hover:bg-[#E4EFE7] border border-[#C6D5CA] rounded-lg whitespace-nowrap"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Open UPI App
+                </a>
+              </div>
+
+              <div className="pt-2 border-t border-[#EDF2EE] space-y-2">
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void completeSale('UPI', upiRef)}
+                  className="w-full py-3 px-4 text-sm font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {submitting
+                    ? 'Recording UPI Sale...'
+                    : `Payment Received — Complete Sale (₹${cartTotals.total.toFixed(2)})`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUpiModalOpen(false)}
+                  className="w-full py-2 text-xs font-medium text-[#54695B] hover:text-[#0D2818] cursor-pointer"
+                >
+                  Back to Bill
+                </button>
+              </div>
             </div>
           </div>
         </div>

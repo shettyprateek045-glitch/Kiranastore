@@ -10,6 +10,7 @@
 
 ### 1. Store Operations, Voice POS Billing & Smart Inventory
 - **Web Speech API Voice Billing & Product Search:** Hands-free counter billing in **English (India)**, **Hindi**, and **Kannada** (`SpeechRecognition` + `speechSynthesis`). Speak multi-item orders (*"Add 2 Atta and 3 Parle-G"*), remove items, clear the bill, or search inventory (*"Search Cooking Oil"*) while automatically enforcing available stock limits and blocking expired-only batches.
+- **Instant UPI / QR Code POS Payments:** Generates NPCI-standard `upi://pay` QR codes locally in the browser for the exact payable bill total, with per-shop editable Merchant UPI VPA (`@okaxis`, `@ybl`, `@paytm`, etc.), mobile UPI deep-link launch, one-tap payment confirmation, and UPI reference stamping on printed receipts.
 - **Fast Counter POS:** Cash/UPI/Card/Credit billing, automatic FEFO batch deduction, instant gross-profit math, printable thermal-friendly receipts, and Daily/Weekly/Monthly sales history.
 - **Invoice OCR Intake & Inventory Ledger:** Upload wholesale bill photos for structured item extraction via server-side Gemini Vision OCR, import/export CSV catalogs, scan barcodes, perform reasoned stock adjustments, and inspect the complete stock movement audit trail.
 
