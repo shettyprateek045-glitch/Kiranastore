@@ -8,6 +8,9 @@ export function PurchasesView() {
   const [showCreatePo, setShowCreatePo] = useState(false);
   const [receiveTarget, setReceiveTarget] = useState<PurchaseOrder | null>(null);
   const [paidNow, setPaidNow] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'received'>('all');
+  const [submitting, setSubmitting] = useState(false);
+  const [receiveErr, setReceiveErr] = useState('');
 
   // New PO state
   const [supplierId, setSupplierId] = useState('');
@@ -45,6 +48,7 @@ export function PurchasesView() {
     e.preventDefault();
     setErr('');
     if (poLines.length === 0) return setErr('Add at least one product line to the purchase order.');
+    setSubmitting(true);
     try {
       await createPurchaseOrder({
         supplierId: supplierId ? Number(supplierId) : null,
@@ -61,18 +65,43 @@ export function PurchasesView() {
       setNotes('');
     } catch (error: unknown) {
       setErr(error instanceof Error ? error.message : 'Could not create purchase order.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const pendingCount = workspace.purchases.filter((p) => p.status === 'pending').length;
   const completedCount = workspace.purchases.filter((p) => p.status === 'received').length;
+  const filteredPurchases = workspace.purchases.filter((po) =>
+    statusFilter === 'all' ? true : po.status === statusFilter
+  );
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="text-sm text-[#4D6154]">
-          <span className="font-mono font-semibold text-[#0D2818]">{pendingCount}</span> pending deliveries ·{' '}
-          <span className="font-mono font-semibold text-[#15803D]">{completedCount}</span> received orders
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1 bg-[#F5F9F6] border border-[#DCE6DF] rounded-lg p-1 text-xs">
+            {(
+              [
+                { id: 'all', label: `All (${workspace.purchases.length})` },
+                { id: 'pending', label: `Pending (${pendingCount})` },
+                { id: 'received', label: `Received (${completedCount})` },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setStatusFilter(tab.id)}
+                className={`px-2.5 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                  statusFilter === tab.id
+                    ? 'bg-[#0D2818] text-white'
+                    : 'text-[#4D6154] hover:text-[#0D2818]'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
         <button
           type="button"
@@ -89,13 +118,15 @@ export function PurchasesView() {
       </div>
 
       <div className="bg-white border border-[#DCE6DF] rounded-xl overflow-hidden">
-        {workspace.purchases.length === 0 ? (
+        {filteredPurchases.length === 0 ? (
           <div className="p-10 text-center text-sm text-[#54695B]">
-            No purchase orders yet. Create a PO manually or approve one from Reorder Recommendations.
+            {workspace.purchases.length === 0
+              ? 'No purchase orders yet. Create a PO manually or approve one from Reorder Recommendations.'
+              : `No ${statusFilter} purchase orders match this filter.`}
           </div>
         ) : (
           <div className="divide-y divide-[#EDF2EE]">
-            {workspace.purchases.map((po) => (
+            {filteredPurchases.map((po) => (
               <div key={po.id} className="p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -135,6 +166,7 @@ export function PurchasesView() {
                       onClick={() => {
                         setReceiveTarget(po);
                         setPaidNow(String(po.totalAmount));
+                        setReceiveErr('');
                       }}
                       className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#0D2818] hover:bg-[#163D26] rounded-lg whitespace-nowrap cursor-pointer"
                     >
@@ -270,9 +302,10 @@ export function PurchasesView() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-xs font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-lg cursor-pointer"
+                  disabled={submitting}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-[#15803D] hover:bg-[#166534] disabled:opacity-50 rounded-lg cursor-pointer"
                 >
-                  Save Purchase Order
+                  {submitting ? 'Saving...' : 'Save Purchase Order'}
                 </button>
               </div>
             </form>
@@ -305,6 +338,11 @@ export function PurchasesView() {
               <p className="mt-1 text-[11px] text-[#54695B]">
                 Any remaining balance will be added to the supplier&apos;s outstanding payable ledger.
               </p>
+              {receiveErr && (
+                <div className="mt-2 p-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  {receiveErr}
+                </div>
+              )}
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button
@@ -316,13 +354,31 @@ export function PurchasesView() {
               </button>
               <button
                 type="button"
+                disabled={submitting}
                 onClick={async () => {
-                  await receivePurchase(receiveTarget.id, Number(paidNow || 0));
-                  setReceiveTarget(null);
+                  const amount = Number(paidNow === '' ? 0 : paidNow);
+                  if (Number.isNaN(amount) || amount < 0 || amount > receiveTarget.totalAmount) {
+                    setReceiveErr(
+                      `Enter a valid payment between ₹0 and ₹${receiveTarget.totalAmount.toLocaleString('en-IN')}.`
+                    );
+                    return;
+                  }
+                  setReceiveErr('');
+                  setSubmitting(true);
+                  try {
+                    await receivePurchase(receiveTarget.id, amount);
+                    setReceiveTarget(null);
+                  } catch (error: unknown) {
+                    setReceiveErr(
+                      error instanceof Error ? error.message : 'Could not record stock receipt.'
+                    );
+                  } finally {
+                    setSubmitting(false);
+                  }
                 }}
-                className="px-4 py-2 text-xs font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-lg cursor-pointer"
+                className="px-4 py-2 text-xs font-semibold text-white bg-[#15803D] hover:bg-[#166534] disabled:opacity-50 rounded-lg cursor-pointer"
               >
-                Confirm &amp; Update Stock
+                {submitting ? 'Updating Stock...' : 'Confirm & Update Stock'}
               </button>
             </div>
           </div>

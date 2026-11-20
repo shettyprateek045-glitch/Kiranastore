@@ -2062,7 +2062,8 @@ export async function createGroupOrderRecord(
 export async function joinOrUpdateGroupOrder(
   shopId: number,
   groupOrderId: number,
-  quantity: number
+  quantity: number,
+  partner?: { shopName: string; village: string }
 ) {
   try {
     const qty = Math.round(Number(quantity));
@@ -2085,22 +2086,45 @@ export async function joinOrUpdateGroupOrder(
       .select()
       .from(groupOrderMembers)
       .where(eq(groupOrderMembers.groupOrderId, groupOrderId));
-    const currentMember = members.find((m) => m.isCurrentShop);
 
-    if (currentMember) {
-      await db
-        .update(groupOrderMembers)
-        .set({ quantity: qty, ownerApproved: false })
-        .where(eq(groupOrderMembers.id, currentMember.id));
+    if (partner && partner.shopName.trim()) {
+      const cleanName = partner.shopName.trim();
+      const cleanVillage = partner.village.trim() || shopRow.city;
+      const existingPartner = members.find(
+        (m) => !m.isCurrentShop && m.shopName.toLowerCase() === cleanName.toLowerCase()
+      );
+      if (existingPartner) {
+        await db
+          .update(groupOrderMembers)
+          .set({ quantity: qty, village: cleanVillage, ownerApproved: true })
+          .where(eq(groupOrderMembers.id, existingPartner.id));
+      } else {
+        await db.insert(groupOrderMembers).values({
+          groupOrderId,
+          shopName: cleanName,
+          village: cleanVillage,
+          quantity: qty,
+          isCurrentShop: false,
+          ownerApproved: true,
+        });
+      }
     } else {
-      await db.insert(groupOrderMembers).values({
-        groupOrderId,
-        shopName: shopRow.name,
-        village: shopRow.city,
-        quantity: qty,
-        isCurrentShop: true,
-        ownerApproved: false,
-      });
+      const currentMember = members.find((m) => m.isCurrentShop);
+      if (currentMember) {
+        await db
+          .update(groupOrderMembers)
+          .set({ quantity: qty, ownerApproved: false })
+          .where(eq(groupOrderMembers.id, currentMember.id));
+      } else {
+        await db.insert(groupOrderMembers).values({
+          groupOrderId,
+          shopName: shopRow.name,
+          village: shopRow.city,
+          quantity: qty,
+          isCurrentShop: true,
+          ownerApproved: false,
+        });
+      }
     }
 
     const refreshedMembers = await db
@@ -2110,9 +2134,10 @@ export async function joinOrUpdateGroupOrder(
     const combinedQty = refreshedMembers.reduce((sum, m) => sum + m.quantity, 0);
     const memberCount = Math.max(1, refreshedMembers.length);
     const sharedFee = Math.round(pool.estTransportFeeIndividual / memberCount);
+    const preserveOwnerApproval = Boolean(partner && pool.ownerApproved);
     const nextStatus =
       combinedQty >= pool.minBulkQty
-        ? pool.ownerApproved
+        ? preserveOwnerApproval
           ? 'approved_by_owner'
           : 'threshold_met'
         : 'open';
@@ -2123,7 +2148,7 @@ export async function joinOrUpdateGroupOrder(
         combinedQty,
         estTransportFeeShared: sharedFee,
         status: nextStatus,
-        ownerApproved: false,
+        ownerApproved: preserveOwnerApproval,
         updatedAt: new Date(),
       })
       .where(eq(groupOrders.id, groupOrderId))

@@ -822,7 +822,14 @@ apiRouter.post('/shops/:shopId/group-orders/:groupOrderId/join', requireAuth, as
     if (!groupOrderId || !Number.isInteger(quantity) || quantity <= 0) {
       return res.status(400).json({ error: 'Valid groupOrderId and positive integer quantity are required.' });
     }
-    const updated = await joinOrUpdateGroupOrder(shopId, groupOrderId, quantity);
+    const partnerShopName =
+      typeof req.body?.partnerShopName === 'string' ? req.body.partnerShopName.trim() : '';
+    const partnerVillage =
+      typeof req.body?.partnerVillage === 'string' ? req.body.partnerVillage.trim() : '';
+    const partner = partnerShopName
+      ? { shopName: partnerShopName, village: partnerVillage }
+      : undefined;
+    const updated = await joinOrUpdateGroupOrder(shopId, groupOrderId, quantity, partner);
     return res.json(updated);
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : 'Failed to join/update group order pool.';

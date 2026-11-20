@@ -72,6 +72,29 @@ export function DemandForecastView() {
         </button>
       </div>
 
+      {/* Explicit Data Source Transparency Banner */}
+      <div
+        className={`rounded-xl border px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-2 ${
+          workspace.shop.isSampleData
+            ? 'bg-amber-50/75 border-amber-200 text-amber-900'
+            : 'bg-[#F5F9F6] border-[#DCE6DF] text-[#3F5346]'
+        }`}
+      >
+        <div>
+          <span className="font-semibold">
+            {workspace.shop.isSampleData
+              ? 'Demo Store Historical Data:'
+              : 'Live Recorded Shop Data:'}
+          </span>{' '}
+          {workspace.shop.isSampleData
+            ? '7-day and 30-day forecasts below are computed from clearly labelled sample Kirana sales history so you can evaluate the math. Sign in with your own shop to forecast from your actual billing ledger.'
+            : `7-day and 30-day forecasts below are computed strictly from ${workspace.sales.length} recorded bills in ${workspace.shop.name}. Products with fewer than 8 active sales days report N/A holdout error instead of fabricated accuracy.`}
+        </div>
+        <span className="font-mono text-[11px] font-semibold whitespace-nowrap">
+          {workspace.sales.length} Bills Analyzed
+        </span>
+      </div>
+
       {forecasts.length === 0 ? (
         <div className="bg-white border border-[#DCE6DF] rounded-xl p-10 text-center text-sm text-[#54695B]">
           Add products and record daily sales to generate statistical demand forecasts.

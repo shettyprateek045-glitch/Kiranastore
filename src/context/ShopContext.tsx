@@ -127,7 +127,11 @@ interface ShopContextValue {
     deliveryWindow?: string;
     notes?: string;
   }) => Promise<void>;
-  joinGroupOrder: (groupOrderId: number, quantity: number) => Promise<void>;
+  joinGroupOrder: (
+    groupOrderId: number,
+    quantity: number,
+    partner?: { shopName: string; village: string }
+  ) => Promise<void>;
   decideGroupOrder: (
     groupOrderId: number,
     action: 'approve_owner' | 'accept_distributor' | 'cancel'
@@ -1613,7 +1617,11 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
   );
 
   const joinGroupOrder = useCallback(
-    async (groupOrderId: number, quantity: number) => {
+    async (
+      groupOrderId: number,
+      quantity: number,
+      partner?: { shopName: string; village: string }
+    ) => {
       if (!workspace) return;
       const qty = Math.round(Number(quantity));
       if (!Number.isInteger(qty) || qty <= 0) {
@@ -1627,48 +1635,98 @@ export function ShopProvider({ children }: { children: React.ReactNode }) {
           if (!prev) return prev;
           const nextGroups = (prev.groupOrders || []).map((g) => {
             if (g.id !== groupOrderId) return g;
-            const hasCurrent = g.members.some((m) => m.isCurrentShop);
-            const nextMembers = hasCurrent
-              ? g.members.map((m) =>
-                  m.isCurrentShop ? { ...m, quantity: qty, ownerApproved: false } : m
-                )
-              : [
-                  ...g.members,
-                  {
-                    id: Date.now(),
-                    groupOrderId: g.id,
-                    shopName: prev.shop.name,
-                    village: prev.shop.city,
-                    quantity: qty,
-                    isCurrentShop: true,
-                    ownerApproved: false,
-                    createdAt: todayISO,
-                  },
-                ];
+            let nextMembers = [...g.members];
+            if (partner && partner.shopName.trim()) {
+              const cleanName = partner.shopName.trim();
+              const cleanVillage = partner.village.trim() || prev.shop.city;
+              const existingIdx = nextMembers.findIndex(
+                (m) => !m.isCurrentShop && m.shopName.toLowerCase() === cleanName.toLowerCase()
+              );
+              if (existingIdx >= 0) {
+                nextMembers[existingIdx] = {
+                  ...nextMembers[existingIdx],
+                  quantity: qty,
+                  village: cleanVillage,
+                  ownerApproved: true,
+                };
+              } else {
+                nextMembers.push({
+                  id: Date.now(),
+                  groupOrderId: g.id,
+                  shopName: cleanName,
+                  village: cleanVillage,
+                  quantity: qty,
+                  isCurrentShop: false,
+                  ownerApproved: true,
+                  createdAt: todayISO,
+                });
+              }
+            } else {
+              const hasCurrent = nextMembers.some((m) => m.isCurrentShop);
+              nextMembers = hasCurrent
+                ? nextMembers.map((m) =>
+                    m.isCurrentShop ? { ...m, quantity: qty, ownerApproved: false } : m
+                  )
+                : [
+                    ...nextMembers,
+                    {
+                      id: Date.now(),
+                      groupOrderId: g.id,
+                      shopName: prev.shop.name,
+                      village: prev.shop.city,
+                      quantity: qty,
+                      isCurrentShop: true,
+                      ownerApproved: false,
+                      createdAt: todayISO,
+                    },
+                  ];
+            }
             const combinedQty = nextMembers.reduce((sum, m) => sum + m.quantity, 0);
-            const sharedFee = Math.round(g.estTransportFeeIndividual / Math.max(1, nextMembers.length));
+            const sharedFee = Math.round(
+              g.estTransportFeeIndividual / Math.max(1, nextMembers.length)
+            );
+            const preserveOwnerApproval = Boolean(partner && g.ownerApproved);
             return {
               ...g,
               members: nextMembers,
               combinedQty,
               estTransportFeeShared: sharedFee,
-              ownerApproved: false,
-              status: combinedQty >= g.minBulkQty ? 'threshold_met' : 'open',
+              ownerApproved: preserveOwnerApproval,
+              status:
+                combinedQty >= g.minBulkQty
+                  ? preserveOwnerApproval
+                    ? 'approved_by_owner'
+                    : 'threshold_met'
+                  : 'open',
               updatedAt: todayISO,
             };
           });
           return { ...prev, groupOrders: nextGroups };
         });
-        notify(`Updated your commitment to ${qty} units in the group pool.`, 'success');
+        notify(
+          partner
+            ? `${partner.shopName.trim()} joined the shared pool with ${qty} units.`
+            : `Updated your commitment to ${qty} units in the group pool.`,
+          'success'
+        );
         return;
       }
 
       await authedFetch(`/api/shops/${workspace.shop.id}/group-orders/${groupOrderId}/join`, {
         method: 'POST',
-        body: JSON.stringify({ quantity: qty }),
+        body: JSON.stringify({
+          quantity: qty,
+          partnerShopName: partner?.shopName?.trim() || undefined,
+          partnerVillage: partner?.village?.trim() || undefined,
+        }),
       });
       await reloadCurrentShop();
-      notify('Group order commitment updated.', 'success');
+      notify(
+        partner
+          ? `${partner.shopName.trim()} added to shared group order.`
+          : 'Group order commitment updated.',
+        'success'
+      );
     },
     [mode, workspace, authedFetch, reloadCurrentShop, notify]
   );

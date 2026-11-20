@@ -66,6 +66,7 @@ export function LogisticsView() {
   const [selectedStopKeys, setSelectedStopKeys] = useState<string[]>([]);
   const [stopLoads, setStopLoads] = useState<Record<string, number>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [plannerErr, setPlannerErr] = useState('');
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -333,13 +334,21 @@ export function LogisticsView() {
 
   const handleSaveOptimizedRun = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedOrigin || plannerStops.length === 0) return;
+    setPlannerErr('');
+    if (!driverName.trim()) {
+      setPlannerErr('Please enter a driver or carrier name before saving the delivery run.');
+      return;
+    }
+    if (!selectedOrigin || plannerStops.length === 0) {
+      setPlannerErr('Select at least one village delivery stop to optimize the route.');
+      return;
+    }
     setSubmitting(true);
     try {
       await createDeliveryRun({
         vehicleType,
-        driverName,
-        driverPhone,
+        driverName: driverName.trim(),
+        driverPhone: driverPhone.trim(),
         originName: selectedOrigin.name,
         originLat: selectedOrigin.lat,
         originLng: selectedOrigin.lng,
@@ -347,6 +356,8 @@ export function LogisticsView() {
         stops: plannerStops,
       });
       setShowPlannerModal(false);
+    } catch (error: unknown) {
+      setPlannerErr(error instanceof Error ? error.message : 'Failed to save delivery run.');
     } finally {
       setSubmitting(false);
     }
@@ -832,6 +843,11 @@ export function LogisticsView() {
             </div>
 
             <form onSubmit={handleSaveOptimizedRun} className="space-y-4 text-xs">
+              {plannerErr && (
+                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  {plannerErr}
+                </div>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-[#3F5346] mb-1">

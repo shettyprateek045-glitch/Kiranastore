@@ -655,6 +655,11 @@ export function SmartGroupPurchasingView() {
   } = useShop();
 
   const [qtyDrafts, setQtyDrafts] = useState<Record<number, string>>({});
+  const [partnerFormPoolId, setPartnerFormPoolId] = useState<number | null>(null);
+  const [partnerShopName, setPartnerShopName] = useState('');
+  const [partnerVillage, setPartnerVillage] = useState('');
+  const [partnerQty, setPartnerQty] = useState('15');
+  const [partnerErr, setPartnerErr] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedOfferId, setSelectedOfferId] = useState<string>('');
   const [newPoolQty, setNewPoolQty] = useState<string>('20');
@@ -662,6 +667,7 @@ export function SmartGroupPurchasingView() {
     'Within 48 hours (Shared Rural Tempo)'
   );
   const [newPoolNotes, setNewPoolNotes] = useState<string>('');
+  const [createErr, setCreateErr] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
 
   const groupOrders = workspace?.groupOrders || [];
@@ -697,17 +703,64 @@ export function SmartGroupPurchasingView() {
 
   const handleCreatePool = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedOfferId) return;
+    setCreateErr('');
+    if (!selectedOfferId) {
+      setCreateErr('Please select a verified distributor offer.');
+      return;
+    }
+    const qtyNum = Math.round(Number(newPoolQty));
+    if (!Number.isInteger(qtyNum) || qtyNum <= 0) {
+      setCreateErr('Enter a valid positive quantity for your shop.');
+      return;
+    }
+    if (!newDeliveryWindow.trim()) {
+      setCreateErr('Enter a preferred delivery window.');
+      return;
+    }
     setSubmitting(true);
     try {
       await createGroupOrder({
         distributorOfferId: Number(selectedOfferId),
-        myQuantity: Number(newPoolQty),
-        deliveryWindow: newDeliveryWindow,
-        notes: newPoolNotes,
+        myQuantity: qtyNum,
+        deliveryWindow: newDeliveryWindow.trim(),
+        notes: newPoolNotes.trim(),
       });
       setShowCreateModal(false);
       setNewPoolNotes('');
+    } catch (error: unknown) {
+      setCreateErr(error instanceof Error ? error.message : 'Failed to create group pool.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAddPartnerShop = async (poolId: number) => {
+    setPartnerErr('');
+    const qtyNum = Math.round(Number(partnerQty));
+    if (!partnerShopName.trim()) {
+      setPartnerErr('Enter the neighboring shop name.');
+      return;
+    }
+    if (!partnerVillage.trim()) {
+      setPartnerErr('Enter the village or town name.');
+      return;
+    }
+    if (!Number.isInteger(qtyNum) || qtyNum <= 0) {
+      setPartnerErr('Quantity must be a positive integer.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await joinGroupOrder(poolId, qtyNum, {
+        shopName: partnerShopName.trim(),
+        village: partnerVillage.trim(),
+      });
+      setPartnerFormPoolId(null);
+      setPartnerShopName('');
+      setPartnerVillage('');
+      setPartnerQty('15');
+    } catch (error: unknown) {
+      setPartnerErr(error instanceof Error ? error.message : 'Failed to add partner shop.');
     } finally {
       setSubmitting(false);
     }
@@ -958,60 +1011,124 @@ export function SmartGroupPurchasingView() {
 
                   {/* Interactive Shopkeeper Controls */}
                   {!isLocked && (
-                    <div className="pt-3 border-t border-[#EDF2EE] flex flex-wrap items-center justify-between gap-2.5">
-                      <div className="flex items-center gap-2">
-                        <label className="text-xs text-[#54695B]">My Qty:</label>
-                        <input
-                          type="number"
-                          min={1}
-                          value={draftQty}
-                          onChange={(e) =>
-                            setQtyDrafts((prev) => ({ ...prev, [pool.id]: e.target.value }))
-                          }
-                          className="w-20 px-2 py-1.5 text-xs font-mono border border-[#C6D5CA] rounded-lg"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => void joinGroupOrder(pool.id, Number(draftQty))}
-                          className="px-2.5 py-1.5 text-xs font-semibold text-[#0D2818] bg-[#EFF5F1] hover:bg-[#E1ECE5] rounded-lg whitespace-nowrap cursor-pointer"
-                        >
-                          {savings.myQty > 0 ? 'Update Qty' : 'Join Pool'}
-                        </button>
+                    <div className="pt-3 border-t border-[#EDF2EE] space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <label className="text-xs text-[#54695B]">My Qty:</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={draftQty}
+                            onChange={(e) =>
+                              setQtyDrafts((prev) => ({ ...prev, [pool.id]: e.target.value }))
+                            }
+                            aria-label={`Your quantity for ${pool.productName}`}
+                            className="w-20 px-2 py-1.5 text-xs font-mono border border-[#C6D5CA] rounded-lg"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void joinGroupOrder(pool.id, Number(draftQty))}
+                            className="px-2.5 py-1.5 text-xs font-semibold text-[#0D2818] bg-[#EFF5F1] hover:bg-[#E1ECE5] rounded-lg whitespace-nowrap cursor-pointer"
+                          >
+                            {savings.myQty > 0 ? 'Update Qty' : 'Join Pool'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPartnerErr('');
+                              setPartnerFormPoolId(partnerFormPoolId === pool.id ? null : pool.id);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-[#15803D] bg-white hover:bg-[#F2FBF4] border border-[#C6D5CA] rounded-lg whitespace-nowrap cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                            Add Neighbor Shop
+                          </button>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          {!pool.ownerApproved ? (
+                            <button
+                              type="button"
+                              disabled={pool.combinedQty < pool.minBulkQty || savings.myQty <= 0}
+                              onClick={() => void decideGroupOrder(pool.id, 'approve_owner')}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap cursor-pointer ${
+                                pool.combinedQty >= pool.minBulkQty && savings.myQty > 0
+                                  ? 'bg-[#15803D] text-white hover:bg-[#166534]'
+                                  : 'bg-[#EDF2EE] text-[#7A8F82] cursor-not-allowed'
+                              }`}
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              Approve &amp; Create Bulk PO
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void decideGroupOrder(pool.id, 'accept_distributor')}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#0D2818] hover:bg-[#163D26] rounded-lg whitespace-nowrap cursor-pointer"
+                            >
+                              <Truck className="w-3.5 h-3.5 text-[#86EFAC]" />
+                              Confirm Distributor Supply
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void decideGroupOrder(pool.id, 'cancel')}
+                            className="px-2.5 py-1.5 text-xs font-medium text-[#B91C1C] hover:bg-red-50 rounded-lg cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
-                        {!pool.ownerApproved ? (
-                          <button
-                            type="button"
-                            disabled={pool.combinedQty < pool.minBulkQty || savings.myQty <= 0}
-                            onClick={() => void decideGroupOrder(pool.id, 'approve_owner')}
-                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap cursor-pointer ${
-                              pool.combinedQty >= pool.minBulkQty && savings.myQty > 0
-                                ? 'bg-[#15803D] text-white hover:bg-[#166534]'
-                                : 'bg-[#EDF2EE] text-[#7A8F82] cursor-not-allowed'
-                            }`}
-                          >
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            Approve &amp; Create Bulk PO
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => void decideGroupOrder(pool.id, 'accept_distributor')}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#0D2818] hover:bg-[#163D26] rounded-lg whitespace-nowrap cursor-pointer"
-                          >
-                            <Truck className="w-3.5 h-3.5 text-[#86EFAC]" />
-                            Confirm Distributor Supply
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => void decideGroupOrder(pool.id, 'cancel')}
-                          className="px-2.5 py-1.5 text-xs font-medium text-[#B91C1C] hover:bg-red-50 rounded-lg cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                      </div>
+                      {partnerFormPoolId === pool.id && (
+                        <div className="p-3 rounded-lg bg-[#F5F9F6] border border-[#DCE6DF] space-y-2.5">
+                          <p className="text-xs font-semibold text-[#0D2818]">
+                            Add Participating Neighboring Village Shop to {pool.poolCode}
+                          </p>
+                          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                            <input
+                              type="text"
+                              value={partnerShopName}
+                              onChange={(e) => setPartnerShopName(e.target.value)}
+                              placeholder="Neighbor shop name (e.g. Nanjundeshwara Store)"
+                              className="sm:col-span-5 px-2.5 py-1.5 text-xs bg-white border border-[#C6D5CA] rounded-md"
+                            />
+                            <input
+                              type="text"
+                              value={partnerVillage}
+                              onChange={(e) => setPartnerVillage(e.target.value)}
+                              placeholder="Village (e.g. Bannur)"
+                              className="sm:col-span-4 px-2.5 py-1.5 text-xs bg-white border border-[#C6D5CA] rounded-md"
+                            />
+                            <input
+                              type="number"
+                              min={1}
+                              value={partnerQty}
+                              onChange={(e) => setPartnerQty(e.target.value)}
+                              placeholder="Qty"
+                              className="sm:col-span-3 px-2.5 py-1.5 text-xs font-mono bg-white border border-[#C6D5CA] rounded-md"
+                            />
+                          </div>
+                          {partnerErr && <p className="text-[11px] text-[#B91C1C]">{partnerErr}</p>}
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setPartnerFormPoolId(null)}
+                              className="px-2.5 py-1 text-xs text-[#4D6154] hover:text-[#0D2818] cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              disabled={submitting}
+                              onClick={() => void handleAddPartnerShop(pool.id)}
+                              className="px-3 py-1 text-xs font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-md cursor-pointer disabled:opacity-50"
+                            >
+                              Add Shop to Pool
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1132,6 +1249,11 @@ export function SmartGroupPurchasingView() {
             </div>
 
             <form onSubmit={handleCreatePool} className="space-y-4">
+              {createErr && (
+                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  {createErr}
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-medium text-[#3F5346] mb-1">
                   Verified Distributor Offer
