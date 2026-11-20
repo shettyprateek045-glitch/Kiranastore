@@ -1,0 +1,6 @@
+{
+  "name": "DukaanIQ",
+  "description": "AI-powered smart inventory, demand forecasting, batch expiry tracking, and retail intelligence platform for Kirana shops.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
