@@ -15,6 +15,7 @@ import {
 import { useShop } from '../context/ShopContext.tsx';
 
 const RuralVillage3DHero = lazy(() => import('./RuralVillage3DHero.tsx'));
+const HeroFlowingLightBackground = lazy(() => import('./HeroFlowingLightBackground.tsx'));
 
 export function LandingPage() {
   const { signInWithGoogle, enterDemoMode, setActiveView } = useShop();
@@ -75,13 +76,17 @@ export function LandingPage() {
       <main id="top">
         {/* Dark Rural Commerce Hero Section */}
         <section
-          className="bg-[#06140D] text-white border-b border-white/10"
+          className="relative overflow-hidden bg-[#06140D] text-white border-b border-white/10"
           style={{
             backgroundImage:
               'radial-gradient(60% 70% at 80% 15%, rgba(16, 185, 129, 0.16) 0%, rgba(6, 20, 13, 0) 70%)',
           }}
         >
-          <div className="max-w-7xl mx-auto px-6 pt-12 pb-14 lg:pt-16 lg:pb-16">
+          <Suspense fallback={null}>
+            <HeroFlowingLightBackground />
+          </Suspense>
+
+          <div className="relative z-10 max-w-7xl mx-auto px-6 pt-12 pb-14 lg:pt-16 lg:pb-16">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-stretch">
               <div className="lg:col-span-6 flex flex-col justify-between py-2">
                 <div>
